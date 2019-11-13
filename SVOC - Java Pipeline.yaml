@@ -1,0 +1,278 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  Delta SVOC Pipeline for Serverless Applications
+Metadata: {}
+Parameters:  
+  AppName:
+    Description: Specify application that uses the pipeline
+    Type: String
+    Default: ServerlessDeltaApp
+  CostCenter:
+    Description: Cost Center of the Application
+    Type: String
+    Default: Cloud
+    AllowedPattern: .+
+  Environment:
+    Description: The Name of Environment
+    Type: String
+    Default: Dev
+    AllowedValues:
+      - Dev
+      - SI
+      - Prod
+  PipelineEmailAddress:
+    Type: String
+    Description: Initial Email address to use for Pipeline notifications and approvals
+  RepoArtifactBucket:
+    Description: Name of the bucket where the Application artifacts are stored
+    Type: String
+    Default: delta-sample-app
+    AllowedPattern: .+
+  RepoTemplateBucket:
+    Description: Name of the bucket where the Application templates are stored
+    Type: String
+    Default: delta-sample-app
+    AllowedPattern: .+    
+  SupportGroup:
+    Description: ServiceNow Event Management Incident Group
+    Type: String
+    Default: CloudTeam
+    AllowedPattern: .+    
+
+
+## Conditions
+
+Conditions:
+  PipelineApproval:
+    Fn::Equals: ["Prod", !Ref Environment]
+
+Mappings: {}
+
+Resources:
+
+  CodePipelineArtifactStoreBucket:
+    Type: 'AWS::S3::Bucket'
+  # CodePipelineArtifactStoreBucketPolicy:
+  #   Type: 'AWS::S3::BucketPolicy'
+  #   Properties:
+  #     Bucket: !Ref CodePipelineArtifactStoreBucket
+  #     PolicyDocument:
+  #       Version: 2012-10-17
+  #       Statement:
+  #         - Sid: DenyUnEncryptedObjectUploads
+  #           Effect: Deny
+  #           Principal: '*'
+  #           Action: 's3:PutObject'
+  #           Resource: !Join 
+  #             - ''
+  #             - - !GetAtt 
+  #                 - CodePipelineArtifactStoreBucket
+  #                 - Arn
+  #               - /*
+  #           Condition:
+  #             StringNotEquals:
+  #               's3:x-amz-server-side-encryption': 'aws:kms'
+  #         - Sid: DenyInsecureConnections
+  #           Effect: Deny
+  #           Principal: '*'
+  #           Action: 's3:*'
+  #           Resource: !Join 
+  #             - ''
+  #             - - !GetAtt 
+  #                 - CodePipelineArtifactStoreBucket
+  #                 - Arn
+  #               - /*
+  #           Condition:
+  #             Bool:
+  #               'aws:SecureTransport': false
+
+  CloudFormationExecutionRole:
+    Type: AWS::IAM::Role
+    DeletionPolicy: Retain
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument: |
+        {
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": { "Service": [ "cloudformation.amazonaws.com" ]},
+                "Action": [ "sts:AssumeRole" ]
+            }]
+        }
+      PermissionsBoundary: !Sub 'arn:aws:iam::${AWS::AccountId}:policy/cft-developer-boundary-policy'
+      RoleName: !Join 
+        - '-'
+        - - delegate-admin-svoc
+          - !Ref AppName
+          - cf-role
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - cloudformation:*
+                  - iam:*
+                  - logs:*
+                  - lambda:*
+                  - s3:*
+
+  PipeLineRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: '1'
+            Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      PermissionsBoundary: !Sub 'arn:aws:iam::${AWS::AccountId}:policy/cft-developer-boundary-policy'
+      RoleName: !Join 
+        - '-'
+        - - delegate-admin-svoc
+          - !Ref AppName
+          - pipeline-role
+  PipelinePolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'codepipeline:*'
+              - 'codebuild:*'
+              - 'iam:ListRoles'
+              - 'events:*'
+              - "cloudwatch:PutMetricData"
+              - 'sns:Publish'
+              - 'iam:*'
+              - 'cloudformation:*'
+            Resource:
+              - '*'
+          - Effect: Allow
+            Action:
+              - 's3:PutObject'
+              - 's3:GetBucketPolicy'
+              - 's3:GetObject'
+              - 's3:ListBucket'
+              - 's3:*List*'
+              - 's3:*Get*'
+            Resource:
+              - '*'         
+          - Effect: Allow
+            Action:
+              - 'lambda:*'
+              - 'apigateway:*'
+              - 'dynamodb:*'
+            Resource:
+              - '*'
+      Roles:
+        - !Ref PipeLineRole
+
+  PipelineSNSTopic:
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      TopicName: !Sub '${Environment}-${AppName}-pipeline-notification'
+      Subscription:
+        - Endpoint: !Ref PipelineEmailAddress
+          Protocol: email
+
+  SVOCInfraPipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    DependsOn: PipelinePolicy
+    Properties:
+      ArtifactStore:
+        Type: S3
+        Location: !Ref CodePipelineArtifactStoreBucket
+      Name: !Sub '${Environment}-${AppName}'
+      RoleArn: !GetAtt 
+        - PipeLineRole
+        - Arn
+      Stages:
+
+        # SOURCE
+        - Name: Source
+          Actions:
+            - Name: AppArtifact
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: '1'
+                Provider: S3
+              OutputArtifacts:
+                - Name: !Sub SourceOutputArtifact
+              Configuration:
+                PollForSourceChanges: 'true'
+                S3Bucket: !Ref RepoArtifactBucket
+                S3ObjectKey: !Sub '${AppName}.jar'
+              RunOrder: 1
+
+            - Name: AppTemplate
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: '1'
+                Provider: S3
+              OutputArtifacts:
+                - Name: !Sub SourceOutputTptl
+              Configuration:
+                PollForSourceChanges: 'true'
+                S3Bucket: !Ref RepoTemplateBucket
+                S3ObjectKey: template.zip
+              RunOrder: 1
+
+        # APPROVAL                  
+        - !If
+          - PipelineApproval
+          - Name: PipelineApproval
+            Actions:
+              - Name: PipelineApproval
+                ActionTypeId:
+                  Category: Approval
+                  Owner: AWS
+                  Provider: Manual
+                  Version: "1"
+                Configuration:
+                  NotificationArn: !Ref PipelineSNSTopic
+                  CustomData: "ACTION REQUIRED: Please approve/reject this Lambda Deployment"
+          - !Ref "AWS::NoValue"
+
+        # DEPLOY              
+        - Name: DeployCode
+          Actions:
+            - InputArtifacts:
+                - Name: !Sub SourceOutputArtifact
+                - Name: !Sub SourceOutputTptl
+              Name: CreateUpdateLambda
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: 1
+              Configuration:
+                ChangeSetName: Deploy
+                ActionMode: CREATE_UPDATE
+                Capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+                RoleArn: !GetAtt CloudFormationExecutionRole.Arn
+                StackName: !Sub '${Environment}-${AppName}-Serverless-Stack'
+                TemplatePath: !Sub 'SourceOutputTptl::serverless-template.yml'
+                TemplateConfiguration: !Sub 'SourceOutputTptl::lambda-parameters.json'
+                ParameterOverrides: !Sub |
+                  {
+                    "SourceArtifact" : { "Fn::GetArtifactAtt" : ["SourceOutputArtifact", "BucketName"]},
+                    "SourceKey" : { "Fn::GetArtifactAtt" : ["SourceOutputArtifact", "ObjectKey"]},
+                    "AppName" : "${AppName}",
+                    "Environment" : "${Environment}",
+                    "CostCenter" : "${CostCenter}",
+                    "SupportGroup" : "${SupportGroup}"
+                  }
+              RunOrder: 1        
+
