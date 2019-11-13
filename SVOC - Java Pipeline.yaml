@@ -23,6 +23,7 @@ Parameters:
   PipelineEmailAddress:
     Type: String
     Description: Initial Email address to use for Pipeline notifications and approvals
+    Default: bontorin@amazon.com
   RepoArtifactBucket:
     Description: Name of the bucket where the Application artifacts are stored
     Type: String
@@ -90,21 +91,33 @@ Resources:
     Type: AWS::IAM::Role
     DeletionPolicy: Retain
     Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: 'sts:AssumeRole'
       Path: /
-      AssumeRolePolicyDocument: |
-        {
-            "Statement": [{
-                "Effect": "Allow",
-                "Principal": { "Service": [ "cloudformation.amazonaws.com" ]},
-                "Action": [ "sts:AssumeRole" ]
-            }]
-        }
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/CloudWatchEventsReadOnlyAccess'
+        - 'arn:aws:iam::aws:policy/AWSCloudFormationFullAccess'
+        - 'arn:aws:iam::aws:policy/AmazonS3FullAccess'
       PermissionsBoundary: !Sub 'arn:aws:iam::${AWS::AccountId}:policy/cft-developer-boundary-policy'
       RoleName: !Join 
         - '-'
         - - delegate-admin-svoc
           - !Ref AppName
           - cf-role
+          - !Select
+            - 0
+            - !Split
+              - '-'
+              - !Select
+                - 2
+                - !Split
+                  - '/'
+                  - !Ref "AWS::StackId"         
       Policies:
         - PolicyName: root
           PolicyDocument:
@@ -113,11 +126,30 @@ Resources:
               - Resource: "*"
                 Effect: Allow
                 Action:
-                  - cloudformation:*
-                  - iam:*
-                  - logs:*
+                  - iam:GetRole
+                  - iam:PassRole
                   - lambda:*
-                  - s3:*
+
+  LambdaRole:
+    Type: 'AWS::IAM::Role'
+    DeletionPolicy: Retain
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/CloudWatchEventsReadOnlyAccess'
+      PermissionsBoundary: !Sub 'arn:aws:iam::${AWS::AccountId}:policy/cft-developer-boundary-policy'
+      RoleName: !Join
+        - '-'
+        - - delegate-admin-svoc
+          - !Ref AppName
+          - lambda-role   
 
   PipeLineRole:
     Type: 'AWS::IAM::Role'
@@ -125,14 +157,15 @@ Resources:
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
-          - Sid: '1'
-            Effect: Allow
+          - Effect: Allow
             Principal:
-              Service:
-                - codepipeline.amazonaws.com
-            Action:
-              - 'sts:AssumeRole'
+              Service: codepipeline.amazonaws.com
+            Action: 'sts:AssumeRole'
       Path: /
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/CloudWatchEventsReadOnlyAccess'
+        - 'arn:aws:iam::aws:policy/AWSCloudFormationFullAccess'
+        - 'arn:aws:iam::aws:policy/AmazonS3FullAccess'
       PermissionsBoundary: !Sub 'arn:aws:iam::${AWS::AccountId}:policy/cft-developer-boundary-policy'
       RoleName: !Join 
         - '-'
@@ -148,30 +181,9 @@ Resources:
           - Effect: Allow
             Action:
               - 'codepipeline:*'
-              - 'codebuild:*'
               - 'iam:ListRoles'
-              - 'events:*'
-              - "cloudwatch:PutMetricData"
+              - 'iam:PassRole'
               - 'sns:Publish'
-              - 'iam:*'
-              - 'cloudformation:*'
-            Resource:
-              - '*'
-          - Effect: Allow
-            Action:
-              - 's3:PutObject'
-              - 's3:GetBucketPolicy'
-              - 's3:GetObject'
-              - 's3:ListBucket'
-              - 's3:*List*'
-              - 's3:*Get*'
-            Resource:
-              - '*'         
-          - Effect: Allow
-            Action:
-              - 'lambda:*'
-              - 'apigateway:*'
-              - 'dynamodb:*'
             Resource:
               - '*'
       Roles:
@@ -272,6 +284,7 @@ Resources:
                     "AppName" : "${AppName}",
                     "Environment" : "${Environment}",
                     "CostCenter" : "${CostCenter}",
+                    "LambdaRole" : "arn:aws:iam::${AWS::AccountId}:role/delegate-admin-svoc-${AppName}-lambda-role",
                     "SupportGroup" : "${SupportGroup}"
                   }
               RunOrder: 1        
