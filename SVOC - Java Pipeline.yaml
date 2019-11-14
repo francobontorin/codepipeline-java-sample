@@ -172,22 +172,18 @@ Resources:
         - - delegate-admin-svoc
           - !Ref AppName
           - pipeline-role
-  PipelinePolicy:
-    Type: 'AWS::IAM::ManagedPolicy'
-    Properties:
-      PolicyDocument:
-        Version: 2012-10-17
-        Statement:
-          - Effect: Allow
-            Action:
-              - 'codepipeline:*'
-              - 'iam:ListRoles'
-              - 'iam:PassRole'
-              - 'sns:Publish'
-            Resource:
-              - '*'
-      Roles:
-        - !Ref PipeLineRole
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - 'codepipeline:*'
+                  - 'iam:ListRoles'
+                  - 'iam:PassRole'
+                  - 'sns:Publish'
 
   PipelineSNSTopic:
     Type: 'AWS::SNS::Topic'
@@ -199,7 +195,7 @@ Resources:
 
   SVOCInfraPipeline:
     Type: 'AWS::CodePipeline::Pipeline'
-    DependsOn: PipelinePolicy
+    DependsOn: PipeLineRole
     Properties:
       ArtifactStore:
         Type: S3
